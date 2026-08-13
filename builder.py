@@ -214,6 +214,12 @@ def verifySources(source_dir):
     if missing:
         die('Missing project file(s) in {}: {}'.format(source_dir, ', '.join(missing)))
 
+# ---------------------------------------------------------------------------
+# Install the required packages
+# ---------------------------------------------------------------------------
+def installPackages(args):
+    pipInstall(['install', '-r', 'requirements.txt'], args.skip_install)
+
 
 # ---------------------------------------------------------------------------
 # Backend: PyInstaller
@@ -356,6 +362,8 @@ def main(argv=None):
         if reply not in ('y', 'yes'):
             print('Aborted.')
             return 0
+    print('Installing the packages...')
+    installPackages(args)
     makedirs(args.dist_dir, exist_ok=True)
     if tool == 'pyinstaller':
         exe_path = buildPyinstaller(args, upx_dir)
