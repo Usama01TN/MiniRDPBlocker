@@ -34,7 +34,7 @@ jobs:
       # NOTE: do NOT add --skip-install here (builder detects the backend by the
       # lowercase name 'pyinstaller' and would wrongly think it's missing).
       - name: Build the exe with builder.py
-        run: python builder.py --icon icon.ico --tool pyinstaller --console --yes
+        run: python builder.py --tool pyinstaller --icon "icon.ico" --console --yes
 
       - name: Upload the exe as a build artifact
         uses: actions/upload-artifact@v4
