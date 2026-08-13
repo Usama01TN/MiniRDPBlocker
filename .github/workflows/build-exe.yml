@@ -1,0 +1,44 @@
+name: Build Windows EXE
+
+# When to run: on every push to the main branch, and on demand from the
+# Actions tab (workflow_dispatch). Add tags here later if you want tagged builds.
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    # MUST be Windows. PyInstaller/Nuitka --onefile cannot cross-compile a
+    # native Windows .exe from Linux or macOS.
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Optional: UPX shrinks the final exe by ~40-60%. builder.py auto-detects
+      # it on PATH. It's a nice-to-have, so never let it fail the build.
+      - name: Install UPX (optional)
+        run: choco install upx -y
+        continue-on-error: true
+
+      # builder.py pip-installs PyInstaller itself, then produces a CONSOLE exe
+      # at dist\MiniRDPBlocker.exe. Console mode is what makes --list_sessions,
+      # --show_hosts_actions and the interactive password prompt actually work.
+      # NOTE: do NOT add --skip-install here (builder detects the backend by the
+      # lowercase name 'pyinstaller' and would wrongly think it's missing).
+      - name: Build the exe with builder.py
+        run: python builder.py --tool pyinstaller --console --yes
+
+      - name: Upload the exe as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiniRDPBlocker-exe
+          path: dist/MiniRDPBlocker.exe
+          if-no-files-found: error
