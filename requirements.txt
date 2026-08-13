@@ -12,3 +12,5 @@ geoip2nation
 IP2Proxy
 ipstack
 ipaddress
+truststore
+certifi
