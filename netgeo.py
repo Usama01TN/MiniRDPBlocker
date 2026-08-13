@@ -7,6 +7,7 @@ from os import path, getenv, makedirs, listdir, rename, remove
 from shutil import copyfile, rmtree
 from json import load, dump, loads
 from datetime import datetime
+from re import findall
 from glob import glob
 import logging
 import gzip
@@ -50,11 +51,13 @@ except:
 # ---------------------------------------------------------------------------
 try:
     import truststore as _truststore
+
     _truststore.inject_into_ssl()
 except Exception:
     try:
-        import ssl as _ssl
         import certifi as _certifi
+        import ssl as _ssl
+
         _CA_CTX = _ssl.create_default_context(cafile=_certifi.where())
         # urllib's urlopen()/urlretrieve() call this when no context is passed.
         _ssl._create_default_https_context = lambda *a, **k: _CA_CTX
@@ -108,6 +111,61 @@ class GeoGrabber(object):
                 # mmdb-compatible format, republished monthly (filename carries
                 # the YYYY-MM tag, see checkForUpdates()). https://db-ip.com/db/
                 'DbIp': 'https://download.db-ip.com/free/{}.mmdb.gz'}
+
+        # DB-IP publishes the Lite DBs monthly and each edition's download page
+        # links the current file directly, e.g.
+        #   https://download.db-ip.com/free/dbip-country-lite-2026-08.mmdb.gz
+        # Scraping that link is how we learn the real release tag instead of
+        # guessing it from the local clock (which 404s early in a month, before
+        # DB-IP has published, or whenever the machine's date is off).
+        _DBIP_PAGES = {
+            'country': 'https://db-ip.com/db/download/ip-to-country-lite',
+            'city': 'https://db-ip.com/db/download/ip-to-city-lite',
+            'asn': 'https://db-ip.com/db/download/ip-to-asn-lite'}
+
+        @classmethod
+        def dbIpTags(cls, kinds=None, timeout=20):
+            """
+            Fetch the CURRENT DB-IP Lite release tag ('YYYY-MM') per edition by
+            reading the real download link off each edition's page.
+
+            :param kinds: iterable of 'country' / 'city' / 'asn'
+                          (default: all three).
+            :param timeout: socket timeout in seconds for each page fetch.
+            :return: dict like {'country': '2026-08', 'city': '2026-08',
+                     'asn': '2026-08'} -- an edition is simply absent when its
+                     page can't be reached or parsed, so callers can fall back.
+            """
+            tags = {}
+            for kind in (kinds or cls._DBIP_PAGES):
+                page = cls._DBIP_PAGES.get(kind)
+                if not page:
+                    continue
+                try:
+                    html = urlopen(page, timeout=timeout).read().decode('utf-8', 'replace')
+                    # Match the linked artifact itself, e.g.
+                    # 'dbip-country-lite-2026-08.mmdb.gz' (also accept .csv.gz,
+                    # since both formats carry the same release tag).
+                    found = findall(r'dbip-' + kind + r'-lite-(\d{4}-\d{2})\.(?:mmdb|csv)\.gz', html)
+                    if found:
+                        # A page can list several formats/older links -- the
+                        # newest tag sorts last as YYYY-MM is lexicographic.
+                        tags[kind] = max(found)
+                except Exception:
+                    continue
+            return tags
+
+        @classmethod
+        def dbIpFiles(cls, kinds=('city', 'country', 'asn'), timeout=20):
+            """
+            Build the DbIp download basenames using the live release tags, e.g.
+            ['dbip-city-lite-2026-08', ...]. Falls back to the current month
+            for any edition whose page couldn't be scraped.
+
+            :return: list[str]
+            """
+            tags = cls.dbIpTags(kinds=kinds, timeout=timeout)
+            return ['dbip-{}-lite-{}'.format(k, tags.get(k, datetime.now().strftime('%Y-%m'))) for k in kinds]
 
         def isUpdated(self, pf=None, fn=None, key=None):
             """
@@ -278,10 +336,11 @@ class GeoGrabber(object):
             """
             data_dict = {}
             # DB-IP republishes its lite DBs monthly under a YYYY-MM suffix,
-            # e.g. dbip-city-lite-2026-01.mmdb.gz -- tag today's file names
-            # with the current month (if last month's file 404s, pass an
-            # explicit `data_dict` to update() instead of relying on this).
-            dbIpTag = datetime.now().strftime('%Y-%m')
+            # e.g. dbip-city-lite-2026-08.mmdb.gz. Read the tag off DB-IP's
+            # own download pages (dbIpFiles -> dbIpTags) so we always ask for
+            # the edition that actually exists; if a page can't be reached it
+            # falls back to the current month.
+            dbIpFiles = self.dbIpFiles()
             FileCode = {
                 'IP2Location': ['DB11LITEBIN', 'DB11LITECSV', 'DBASNLITE', 'DB11LITEBINIPV6', 'DB11LITECSVIPV6',
                                 'DBASNLITEIPV6'],
@@ -291,17 +350,15 @@ class GeoGrabber(object):
                 'GeoIP2': ['GeoLite2-ASN', 'GeoLite2-ASN-CSV', 'GeoLite2-City', 'GeoLite2-City-CSV',
                            'GeoLite2-Country', 'GeoLite2-Country-CSV'],
                 # Free, no key needed -- country + city lite DBs.
-                'SxGeo': ['SxGeo', 'SxGeoCity'],
+                'SxGeo': ['SxGeo', 'SxGeoCountry', 'SxGeoCity', 'SxGeoCity_utf8'],  # , 'SxGeoCity_cp1251'],
                 # Free, no key needed -- city/country/ASN lite DBs, mmdb format.
-                'DbIp': ['dbip-city-lite-{}'.format(dbIpTag), 'dbip-country-lite-{}'.format(dbIpTag),
-                         'dbip-asn-lite-{}'.format(dbIpTag)]}
+                'DbIp': dbIpFiles}
             urls_key = {}
             if kwargs.get('token'):
                 urls_key['IP2Location'] = kwargs['token']
                 urls_key['IP2Proxy'] = kwargs['token']
             if kwargs.get('license'):
                 urls_key['GeoIP2'] = kwargs['license']
-
             skipped = []
             for it in (providers or FileCode):
                 if it not in FileCode:
@@ -316,12 +373,12 @@ class GeoGrabber(object):
             return data_dict, skipped
 
         def IP2Location(self):
-            return IP2Location(path.join(self.parent.root_data,
-                                         'IP2Location/database/IP2LOCATION-LITE-DB11.BIN')).get_all(self.ip)
+            return IP2Location(
+                path.join(self.parent.root_data, 'IP2Location/database/IP2LOCATION-LITE-DB11.BIN')).get_all(self.ip)
 
         def IP2Proxy(self):
-            return IP2Proxy(path.join(self.parent.root_data,
-                                      'IP2Proxy/database/IP2PROXY-LITE-PX11.BIN')).get_all(self.ip)
+            return IP2Proxy(
+                path.join(self.parent.root_data, 'IP2Proxy/database/IP2PROXY-LITE-PX11.BIN')).get_all(self.ip)
 
         def GeoIP(self, HAVE_COUNTRY=True, HAVE_CITY=True, HAVE_IPASNUM=True, HAVE_ISP=True, HAVE_ORG=True):
             dataPth = path.join(self.parent.root_data, 'geoip/database/')
