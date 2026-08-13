@@ -218,7 +218,7 @@ def verifySources(source_dir):
 # Install the required packages
 # ---------------------------------------------------------------------------
 def installPackages(args):
-    pipInstall(['install', '-r', 'requirements.txt'], args.skip_install)
+    pipInstall(['-r', 'requirements.txt'], args.skip_install)
 
 
 # ---------------------------------------------------------------------------
