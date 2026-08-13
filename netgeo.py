@@ -36,6 +36,31 @@ try:
 except:
     from urllib import urlretrieve, urlopen
 
+# ---------------------------------------------------------------------------
+# TLS trust. A frozen (PyInstaller/Nuitka) exe usually has no usable CA
+# bundle, so urlopen()/urlretrieve() fail with:
+#     [SSL: CERTIFICATE_VERIFY_FAILED] unable to get local issuer certificate
+# Set up a working trust source once, at import time, in this order:
+#   1) truststore -- verify through the OS (Windows) certificate store, which
+#      can also pull the missing intermediate certs these servers omit. It
+#      patches ssl globally, so plain urlopen()/urlretrieve() just work.
+#   2) certifi    -- fall back to a bundled Mozilla CA root file.
+# Best-effort: if neither package is available we leave the default context
+# alone (downloads may still fail, but importing netgeo never breaks).
+# ---------------------------------------------------------------------------
+try:
+    import truststore as _truststore
+    _truststore.inject_into_ssl()
+except Exception:
+    try:
+        import ssl as _ssl
+        import certifi as _certifi
+        _CA_CTX = _ssl.create_default_context(cafile=_certifi.where())
+        # urllib's urlopen()/urlretrieve() call this when no context is passed.
+        _ssl._create_default_https_context = lambda *a, **k: _CA_CTX
+    except Exception:
+        pass
+
 # HTTP client for REST geo services (ip-api.com). Falls back to urlopen
 # so the module still works when the `requests` package is unavailable.
 try:
