@@ -16,7 +16,7 @@ Interactive (asks which backend to use):
 Non-interactive:
     python builder.py --tool pyinstaller
     python builder.py --tool nuitka --no-console
-    python builder.py --tool nuitka --upx --icon app.ico
+    python builder.py --tool nuitka --upx --icon icon.ico
 Options:
 -------
     --tool {pyinstaller,nuitka}   Skip the interactive prompt.
