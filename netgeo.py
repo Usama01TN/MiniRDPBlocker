@@ -4,7 +4,7 @@ Net geo scrapper.
 """
 # Primary libs
 from os import path, getenv, makedirs, listdir, rename, remove
-from shutil import copyfile, rmtree
+from shutil import copyfile, rmtree, copyfileobj
 from json import load, dump, loads
 from datetime import datetime
 from re import findall
@@ -33,9 +33,10 @@ from zipfile import ZipFile
 
 # Url downloader
 try:
-    from urllib.request import urlretrieve, urlopen
+    from urllib.request import urlretrieve, urlopen, Request
 except:
     from urllib import urlretrieve, urlopen
+    from urllib2 import Request
 
 # ---------------------------------------------------------------------------
 # TLS trust. A frozen (PyInstaller/Nuitka) exe usually has no usable CA
@@ -72,6 +73,79 @@ except ImportError:
     http_get = None
 
 logging.disable(logging.ERROR)
+
+# ---------------------------------------------------------------------------
+# HTTP helpers.
+# Plain urlopen()/urlretrieve() advertise 'User-Agent: Python-urllib/3.x'.
+# Several geo-data hosts -- DB-IP's download CDN in particular -- reject that
+# outright with 'HTTP Error 403: Forbidden'. Sending ordinary browser headers
+# (and a Referer, which DB-IP's download host also checks) makes the requests
+# behave like a normal download. Every HTTP call in this module funnels through
+# these helpers so the fix covers the release-tag lookup, the size check, the
+# downloads themselves and the REST fallbacks alike.
+# ---------------------------------------------------------------------------
+_HTTP_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+            '(KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36')
+_HTTP_HEADERS = {
+    'User-Agent': _HTTP_UA,
+    'Accept': '*/*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Connection': 'close'}
+
+
+def _refererFor(url):
+    """
+    Best-effort Referer for hosts that gate downloads on one (db-ip.com).
+    :param url: str
+    :return: str | None
+    """
+    low = (url or '').lower()
+    if 'db-ip.com' in low:
+        return 'https://db-ip.com/db/lite.php'
+    if 'sypexgeo.net' in low:
+        return 'https://sypexgeo.net/ru/download/'
+    return None
+
+
+def httpOpen(url, timeout=30, extra_headers=None):
+    """
+    urlopen() with browser-like headers. Returns the same response object as
+    urlopen(), so callers can use .read() / .info() exactly as before.
+    :param url: str
+    :param timeout: int
+    :param extra_headers: dict | None
+    :return: http response object
+    """
+    headers = dict(_HTTP_HEADERS)
+    ref = _refererFor(url)
+    if ref:
+        headers['Referer'] = ref
+    if extra_headers:
+        headers.update(extra_headers)
+    return urlopen(Request(url, headers=headers), timeout=timeout)
+
+
+def httpDownload(url, dest, timeout=60, extra_headers=None):
+    """
+    Drop-in replacement for urlretrieve(url, dest) that sends browser headers
+    and streams the body to disk (so large .mmdb.gz files never sit fully in
+    memory). Raises the same exceptions urlretrieve would (HTTPError etc.).
+    :param url: str
+    :param dest: str -- destination file path
+    :param timeout: int
+    :param extra_headers: dict | None
+    :return: str -- dest
+    """
+    resp = httpOpen(url, timeout=timeout, extra_headers=extra_headers)
+    try:
+        with open(dest, 'wb') as fout:
+            copyfileobj(resp, fout, 64 * 1024)
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+    return dest
 
 
 class GeoGrabber(object):
@@ -142,7 +216,7 @@ class GeoGrabber(object):
                 if not page:
                     continue
                 try:
-                    html = urlopen(page, timeout=timeout).read().decode('utf-8', 'replace')
+                    html = httpOpen(page, timeout=timeout).read().decode('utf-8', 'replace')
                     # Match the linked artifact itself, e.g.
                     # 'dbip-country-lite-2026-08.mmdb.gz' (also accept .csv.gz,
                     # since both formats carry the same release tag).
@@ -183,7 +257,7 @@ class GeoGrabber(object):
                 if fn not in load_info:
                     return False
                 file_url = self._urlStruct[pf].format(key, fn) if key else self._urlStruct[pf].format(fn)
-                remote_size = int(urlopen(file_url).info().get('Content-Length'))
+                remote_size = int(httpOpen(file_url).info().get('Content-Length'))
                 return remote_size <= load_info[fn]
             except Exception:
                 return False
@@ -252,7 +326,7 @@ class GeoGrabber(object):
                         fl_ext = '.gz' if down_url.lower().endswith('gz') else '.zip'
                         fl_name = path.join(down_dir, fn + fl_ext)
                         makedirs(down_dir, exist_ok=True)
-                        urlretrieve(down_url, fl_name)
+                        httpDownload(down_url, fl_name)
                         makedirs(db_dir, exist_ok=True)
 
                         if it == 'IP2Nation':
@@ -811,9 +885,12 @@ class GeoGrabber(object):
             if lang:
                 url += "&lang={}".format(lang)
             if http_get is not None:
+                # Same browser headers as httpOpen(): `requests` otherwise
+                # sends 'python-requests/x', which these hosts may 403 too.
+                kwargs.setdefault('headers', dict(_HTTP_HEADERS))
                 return http_get(url, **kwargs).json()
             # Fallback when `requests` is not installed.
-            return loads(urlopen(url).read().decode('utf-8'))
+            return loads(httpOpen(url).read().decode('utf-8'))
 
         def db_ip(self, api_key=None, **kwargs):
             """
@@ -835,8 +912,11 @@ class GeoGrabber(object):
             key = api_key or "free"
             url = "https://api.db-ip.com/v2/{}/{}".format(key, self.ip)
             if http_get is not None:
+                # Same browser headers as httpOpen(): `requests` otherwise
+                # sends 'python-requests/x', which these hosts may 403 too.
+                kwargs.setdefault('headers', dict(_HTTP_HEADERS))
                 return http_get(url, **kwargs).json()
-            return loads(urlopen(url).read().decode('utf-8'))
+            return loads(httpOpen(url).read().decode('utf-8'))
 
         def grabGeo(self, engine=None, **kwargs):
             if engine:
